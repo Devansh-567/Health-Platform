@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100;
+  transition: background-color 0.4s ease, color 0.4s ease;
+}
+
+/* Smoothly fade colors across the app when the theme switches, without
+   animating layout-affecting properties (avoids janky transitions on
+   things like width/height/transform that already have their own). */
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 0.3s;
+  transition-timing-function: ease;
+}
+
+/* Edge/IE inject their own built-in "reveal password" eye icon inside
+   password inputs, which visually stacks with our custom PasswordField
+   toggle button (the "two eyes" bug). Hide the native ones — our custom
+   toggle is the only one that should render. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}

@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+/* Edge/IE inject their own built-in "reveal password" eye icon inside
+   password inputs, which visually stacks with our custom PasswordField
+   toggle button (the "two eyes" bug). Hide the native ones — our custom
+   toggle is the only one that should render. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}

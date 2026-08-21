@@ -1,0 +1,883 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC CORE (fully DB-driven — no role/permission is hardcoded in app logic)
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String   @id @default(uuid())
+  code        String   @unique // e.g. SUPER_ADMIN, ADMIN, DOCTOR, NURSE, PATIENT
+  name        String
+  description String?
+  isSystem    Boolean  @default(false) // system roles cannot be deleted/renamed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users           User[]
+  rolePermissions RolePermission[]
+  invitations     Invitation[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique // e.g. patient.view, prescription.create
+  module      String   // e.g. patient, prescription, user, system
+  description String?
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Per-user permission overrides (grant or revoke beyond the base role)
+model UserPermission {
+  id           String   @id @default(uuid())
+  userId       String
+  permissionId String
+  effect       PermissionEffect @default(GRANT)
+  createdAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+  @@map("user_permissions")
+}
+
+enum PermissionEffect {
+  GRANT
+  REVOKE
+}
+
+// ---------------------------------------------------------------------------
+// TENANCY (hospital/department scoping — required for a real multi-facility SaaS)
+// ---------------------------------------------------------------------------
+
+model Hospital {
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
+  address   String?
+  phone     String?
+  // Needed to dispatch ambulances: a trip's destination is this hospital's
+  // coordinates, captured at dispatch time (see AmbulanceTrip). Nullable
+  // because a hospital may not have geocoded coordinates set yet — dispatch
+  // is blocked with a clear error until they're set.
+  latitude  Float?
+  longitude Float?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments Department[]
+  users       User[]
+  appointments Appointment[]
+  diagnoses    Diagnosis[]
+  prescriptions Prescription[]
+  vitalSigns   VitalSign[]
+  clinicalNotes ClinicalNote[]
+  reports      Report[]
+  transfersOut PatientTransfer[] @relation("TransferFromHospital")
+  transfersIn  PatientTransfer[] @relation("TransferToHospital")
+  ambulances   Ambulance[]
+  emergencyCases EmergencyCase[]
+
+  @@map("hospitals")
+}
+
+model Department {
+  id         String   @id @default(uuid())
+  hospitalId String
+  name       String
+  createdAt  DateTime @default(now())
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id], onDelete: Cascade)
+  users    User[]
+  appointments Appointment[]
+
+  @@unique([hospitalId, name])
+  @@map("departments")
+}
+
+// ---------------------------------------------------------------------------
+// USER
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+  LOCKED
+}
+
+model User {
+  id                String     @id @default(uuid())
+  email             String     @unique
+  phone             String?    @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  roleId            String
+  hospitalId        String?
+  departmentId      String?
+  status            UserStatus @default(PENDING_VERIFICATION)
+  isEmailVerified   Boolean    @default(false)
+  failedLoginCount  Int        @default(0)
+  lockedUntil       DateTime?
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  passwordChangedAt DateTime   @default(now())
+  mustChangePassword Boolean   @default(false)
+  // Set whenever a temporary password is issued (e.g. admin-created patient
+  // account). While mustChangePassword is true AND this is in the past,
+  // login is rejected — the temp credential has expired and the account
+  // must be re-issued a new one (via resend) or recovered via forgot-password.
+  tempPasswordExpiresAt DateTime?
+  createdById       String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime?
+
+  role       Role        @relation(fields: [roleId], references: [id])
+  hospital   Hospital?   @relation(fields: [hospitalId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+  createdBy  User?       @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[]    @relation("UserCreatedBy")
+
+  userPermissions       UserPermission[]
+  refreshTokens         RefreshToken[]
+  passwordResetTokens   PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  invitationsSent       Invitation[]              @relation("InvitedBy")
+  auditLogs             AuditLog[]
+  appointmentsCreated    Appointment[] @relation("AppointmentCreatedBy")
+  appointmentsCancelled  Appointment[] @relation("AppointmentCancelledBy")
+  vitalSignsRecorded     VitalSign[]    @relation("VitalSignRecordedBy")
+  clinicalNotesAuthored  ClinicalNote[] @relation("ClinicalNoteAuthor")
+  reportsUploaded        Report[]       @relation("ReportUploadedBy")
+  transfersInitiated     PatientTransfer[] @relation("TransferInitiatedBy")
+  transfersRespondedTo   PatientTransfer[] @relation("TransferRespondedBy")
+  driverProfile          DriverProfile?
+  ambulanceTripsDriven   AmbulanceTrip[]   @relation("TripDriver")
+  emergencyCasesAsParamedic   EmergencyCase[] @relation("EmergencyParamedic")
+  emergencyCasesAssignedToMe EmergencyCase[] @relation("EmergencyAssignedDoctor")
+  emergencyCasesAssignedByMe EmergencyCase[] @relation("EmergencyAssignedBy")
+  emergencyCasesAcknowledgedByMe EmergencyCase[] @relation("EmergencyAcknowledgedBy")
+  assignedAmbulance      Ambulance?        @relation("AmbulanceAssignedDriver")
+
+  doctorProfile  DoctorProfile?
+  nurseProfile   NurseProfile?
+  patientProfile PatientProfile?
+  adminProfile   AdminProfile?
+
+  @@index([roleId])
+  @@index([hospitalId])
+  @@index([status])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// ROLE PROFILES (role-specific attributes kept out of the core User table)
+// ---------------------------------------------------------------------------
+
+model AdminProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("admin_profiles")
+}
+
+model DoctorProfile {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  specialization   String?
+  licenseNumber    String?  @unique
+  qualification    String?
+  yearsOfExperience Int?
+  consultationFee  Decimal? @db.Decimal(10, 2)
+  createdAt        DateTime @default(now())
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patients DoctorPatientMap[]
+  appointments Appointment[]
+  diagnoses    Diagnosis[]
+  prescriptions Prescription[]
+
+  @@map("doctor_profiles")
+}
+
+model NurseProfile {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  licenseNumber String?  @unique
+  shift         String?
+  createdAt     DateTime @default(now())
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patients NursePatientMap[]
+
+  @@map("nurse_profiles")
+}
+
+model DriverProfile {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  licenseNumber String?  @unique
+  phone         String?
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("driver_profiles")
+}
+
+model PatientProfile {
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  dateOfBirth       DateTime?
+  gender            String?
+  bloodGroup        String?
+  address           String?
+  emergencyContact  String?
+  emergencyPhone    String?
+  medicalRecordNo   String?   @unique
+  createdAt         DateTime  @default(now())
+
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  doctors DoctorPatientMap[]
+  nurses  NursePatientMap[]
+  appointments Appointment[]
+  diagnoses    Diagnosis[]
+  prescriptions Prescription[]
+  vitalSigns   VitalSign[]
+  clinicalNotes ClinicalNote[]
+  reports      Report[]
+  transfers    PatientTransfer[]
+  emergencyCases EmergencyCase[]
+
+  @@map("patient_profiles")
+}
+
+// Assignment maps (who is treating whom) — drives "assigned patients" access rules
+model DoctorPatientMap {
+  id         String   @id @default(uuid())
+  doctorId   String
+  patientId  String
+  assignedAt DateTime @default(now())
+  isActive   Boolean  @default(true)
+
+  doctor  DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  patient PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, patientId])
+  @@map("doctor_patient_map")
+}
+
+model NursePatientMap {
+  id         String   @id @default(uuid())
+  nurseId    String
+  patientId  String
+  assignedAt DateTime @default(now())
+  isActive   Boolean  @default(true)
+
+  nurse   NurseProfile   @relation(fields: [nurseId], references: [id], onDelete: Cascade)
+  patient PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@unique([nurseId, patientId])
+  @@map("nurse_patient_map")
+}
+
+// ---------------------------------------------------------------------------
+// AUTH TOKENS
+// ---------------------------------------------------------------------------
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  replacedByTokenHash String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// INVITATIONS (doctor/nurse onboarding by admin)
+// ---------------------------------------------------------------------------
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model Invitation {
+  id           String           @id @default(uuid())
+  email        String
+  roleId       String
+  hospitalId   String?
+  departmentId String?
+  invitedById  String
+  tokenHash    String           @unique
+  status       InvitationStatus @default(PENDING)
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  createdAt    DateTime         @default(now())
+
+  role      Role @relation(fields: [roleId], references: [id])
+  invitedBy User @relation("InvitedBy", fields: [invitedById], references: [id])
+
+  @@index([email])
+  @@map("invitations")
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT LOG (Super admin visibility across the whole system)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // e.g. AUTH.LOGIN_SUCCESS, USER.CREATE, ROLE.PERMISSION_UPDATE
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// APPOINTMENTS (patient <-> doctor scheduling)
+// ---------------------------------------------------------------------------
+
+enum AppointmentStatus {
+  REQUESTED // created by a patient, awaiting doctor/admin confirmation
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+model Appointment {
+  id             String            @id @default(uuid())
+  hospitalId     String
+  doctorId       String
+  patientId      String
+  departmentId   String?
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  status         AppointmentStatus @default(REQUESTED)
+  reason         String?
+  cancelReason   String?
+  cancelledById  String?
+  cancelledAt    DateTime?
+  createdById    String
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  hospital    Hospital       @relation(fields: [hospitalId], references: [id])
+  doctor      DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  patient     PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  department  Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  createdBy   User           @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+  cancelledBy User?          @relation("AppointmentCancelledBy", fields: [cancelledById], references: [id])
+  diagnosis     Diagnosis?
+  prescriptions Prescription[]
+
+  @@index([doctorId, scheduledStart])
+  @@index([patientId, scheduledStart])
+  @@index([hospitalId, status])
+  @@map("appointments")
+}
+
+// ---------------------------------------------------------------------------
+// CLINICAL RECORDS (diagnosis, prescriptions, vitals, notes)
+// Every record is scoped to a hospitalId derived server-side from the
+// author's OWN hospital — never trusted from client input, matching the
+// same tenancy rule enforced everywhere else in this codebase. Access is
+// further restricted to an active doctor/nurse-patient ASSIGNMENT
+// (DoctorPatientMap / NursePatientMap), not merely same-hospital — a
+// doctor should only be able to write clinical data for patients actually
+// assigned to them.
+// ---------------------------------------------------------------------------
+
+model Diagnosis {
+  id            String   @id @default(uuid())
+  hospitalId    String
+  patientId     String
+  doctorId      String
+  appointmentId String?  @unique // at most one diagnosis per appointment
+  condition     String
+  description   String?
+  diagnosedAt   DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  hospital      Hospital       @relation(fields: [hospitalId], references: [id])
+  patient       PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor        DoctorProfile  @relation(fields: [doctorId], references: [id])
+  appointment   Appointment?   @relation(fields: [appointmentId], references: [id])
+  prescriptions Prescription[]
+
+  @@index([patientId, diagnosedAt])
+  @@index([doctorId])
+  @@map("diagnoses")
+}
+
+enum PrescriptionStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model Prescription {
+  id            String             @id @default(uuid())
+  hospitalId    String
+  patientId     String
+  doctorId      String
+  diagnosisId   String?
+  appointmentId String?
+  status        PrescriptionStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  hospital    Hospital           @relation(fields: [hospitalId], references: [id])
+  patient     PatientProfile     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor      DoctorProfile      @relation(fields: [doctorId], references: [id])
+  diagnosis   Diagnosis?         @relation(fields: [diagnosisId], references: [id])
+  appointment Appointment?       @relation(fields: [appointmentId], references: [id])
+  items       PrescriptionItem[]
+
+  @@index([patientId, createdAt])
+  @@index([doctorId])
+  @@map("prescriptions")
+}
+
+model PrescriptionItem {
+  id             String  @id @default(uuid())
+  prescriptionId String
+  medicineName   String
+  dosage         String // e.g. "500mg"
+  frequency      String // e.g. "twice daily"
+  durationDays   Int?
+  instructions   String?
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@map("prescription_items")
+}
+
+model VitalSign {
+  id                     String   @id @default(uuid())
+  hospitalId             String
+  patientId              String
+  recordedById           String // User id — typically a nurse, but a doctor may also record vitals
+  bloodPressureSystolic  Int?
+  bloodPressureDiastolic Int?
+  heartRate              Int?
+  temperatureCelsius     Decimal? @db.Decimal(4, 1)
+  respiratoryRate        Int?
+  oxygenSaturation       Int?
+  weightKg               Decimal? @db.Decimal(5, 2)
+  heightCm               Decimal? @db.Decimal(5, 2)
+  notes                  String?
+  recordedAt             DateTime @default(now())
+
+  hospital   Hospital       @relation(fields: [hospitalId], references: [id])
+  patient    PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  recordedBy User           @relation("VitalSignRecordedBy", fields: [recordedById], references: [id])
+
+  @@index([patientId, recordedAt])
+  @@map("vital_signs")
+}
+
+enum ClinicalNoteType {
+  DOCTOR_NOTE
+  NURSING_NOTE
+}
+
+model ClinicalNote {
+  id         String           @id @default(uuid())
+  hospitalId String
+  patientId  String
+  authorId   String // User id — doctor or nurse, matches `type`
+  type       ClinicalNoteType
+  content    String
+  createdAt  DateTime         @default(now())
+
+  hospital Hospital       @relation(fields: [hospitalId], references: [id])
+  patient  PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  author   User           @relation("ClinicalNoteAuthor", fields: [authorId], references: [id])
+
+  @@index([patientId, createdAt])
+  @@map("clinical_notes")
+}
+
+// ---------------------------------------------------------------------------
+// REPORTS (uploaded files — lab results, scans, discharge summaries, etc.)
+// Files are stored on local disk in dev (backend/uploads/reports/) and
+// served through an authenticated, permission-checked download route —
+// never as a public static directory, since these are medical documents.
+// Swap storagePath's meaning to an S3 object key (instead of a local path)
+// for production; the DB schema and access-control logic don't need to
+// change, only the storage/download implementation in clinical.service.ts.
+// ---------------------------------------------------------------------------
+
+model Report {
+  id             String   @id @default(uuid())
+  hospitalId     String
+  patientId      String
+  uploadedById   String
+  title          String
+  originalName   String
+  storagePath    String // relative path under the uploads root (dev) or object key (prod)
+  mimeType       String
+  fileSizeBytes  Int
+  uploadedAt     DateTime @default(now())
+
+  hospital   Hospital       @relation(fields: [hospitalId], references: [id])
+  patient    PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  uploadedBy User           @relation("ReportUploadedBy", fields: [uploadedById], references: [id])
+
+  @@index([patientId, uploadedAt])
+  @@map("reports")
+}
+
+// ---------------------------------------------------------------------------
+// INTERHOSPITAL PATIENT TRANSFER
+// A two-party, in-app request/confirm workflow between Admins of two
+// different hospitals — no email/token step, unlike Invitation, since both
+// parties are already authenticated staff acting inside the dashboard
+// (mirrors the assignments module's "direct DB-driven" style rather than
+// invitations' "external onboarding" style).
+//
+// Access model on ACCEPT (see transfers.service.ts + clinical.service.ts):
+//  1. The patient's User.hospitalId is moved to the receiving hospital —
+//     they now show up in that hospital's roster (and their old
+//     departmentId, which belongs to the sending hospital, is cleared).
+//  2. Any ACCEPTED transfer that touches an Admin's hospital (as sender OR
+//     receiver) lifts that Admin's normally hospital-bounded clinical-record
+//     view for this one patient to the SAME full-history access a doctor/
+//     nurse gets once assigned — i.e. all of that patient's reports,
+//     diagnoses, prescriptions, vitals and notes, regardless of which
+//     hospital originally created them. This is what "admin1 grants access"
+//     means in practice: continuity of care survives the handoff for both
+//     sides, not just a one-way grant that would black out admin1 the
+//     moment the request is accepted.
+// ---------------------------------------------------------------------------
+
+enum TransferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+model PatientTransfer {
+  id             String         @id @default(uuid())
+  patientId      String
+  fromHospitalId String
+  toHospitalId   String
+  initiatedById  String
+  respondedById  String?
+  status         TransferStatus @default(PENDING)
+  reason         String? // why admin1 is requesting the transfer
+  responseNote   String? // admin2's note on accept/reject
+  requestedAt    DateTime       @default(now())
+  respondedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  patient      PatientProfile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  fromHospital Hospital       @relation("TransferFromHospital", fields: [fromHospitalId], references: [id])
+  toHospital   Hospital       @relation("TransferToHospital", fields: [toHospitalId], references: [id])
+  initiatedBy  User           @relation("TransferInitiatedBy", fields: [initiatedById], references: [id])
+  respondedBy  User?          @relation("TransferRespondedBy", fields: [respondedById], references: [id])
+  ambulanceTrips AmbulanceTrip[]
+
+  @@index([patientId, status])
+  @@index([toHospitalId, status])
+  @@index([fromHospitalId, status])
+  @@map("patient_transfers")
+}
+
+// ---------------------------------------------------------------------------
+// AMBULANCE DISPATCH & LIVE GPS TRACKING
+// A trip is the physical execution of an (ACCEPTED) interhospital transfer:
+// a hospital dispatches one of its ambulances + a driver to collect the
+// patient at a pickup point (defaults to the sending hospital, but can be
+// overridden — e.g. an accident site or the patient's home) and drive them
+// to the receiving hospital. Route + ETA come from OSRM (see utils/osrm.ts);
+// live position comes from the driver's phone via browser geolocation,
+// pushed to POST /api/ambulances/:id/location and polled by trackers.
+// ---------------------------------------------------------------------------
+
+enum AmbulanceStatus {
+  AVAILABLE
+  ON_TRIP
+  MAINTENANCE
+  OFFLINE
+}
+
+enum TripStatus {
+  ASSIGNED // dispatched, driver hasn't started moving yet
+  EN_ROUTE_TO_PICKUP
+  ARRIVED_AT_PICKUP
+  EN_ROUTE_TO_HOSPITAL
+  COMPLETED
+  CANCELLED
+}
+
+model Ambulance {
+  id             String          @id @default(uuid())
+  hospitalId     String
+  vehicleNumber  String          @unique // plate / fleet number, e.g. "AMB-04"
+  status         AmbulanceStatus @default(AVAILABLE)
+  currentLat     Float?
+  currentLng     Float?
+  lastLocationAt DateTime?
+  // The driver/paramedic regularly assigned to this vehicle — set by an
+  // admin (Ambulances page). Lets a driver's emergency console resolve
+  // "my ambulance" automatically instead of asking them to pick one every
+  // time they start a case; a driver drives at most one ambulance.
+  assignedDriverId String? @unique
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  hospital       Hospital                @relation(fields: [hospitalId], references: [id])
+  assignedDriver User?                   @relation("AmbulanceAssignedDriver", fields: [assignedDriverId], references: [id])
+  trips          AmbulanceTrip[]
+  pings          AmbulanceLocationPing[]
+  emergencyCases EmergencyCase[]
+
+  @@index([hospitalId, status])
+  @@map("ambulances")
+}
+
+model AmbulanceTrip {
+  id          String     @id @default(uuid())
+  transferId  String
+  ambulanceId String
+  driverId    String
+  status      TripStatus @default(ASSIGNED)
+
+  // Captured at dispatch time (not FKs) so the trip's history is a snapshot
+  // that survives a hospital's coordinates changing later.
+  pickupLat        Float
+  pickupLng        Float
+  pickupAddress    String?
+  destinationLat   Float
+  destinationLng   Float
+  destinationLabel String?
+
+  // Cached OSRM result (see utils/osrm.ts), refreshed at dispatch and at the
+  // EN_ROUTE_TO_HOSPITAL transition so the ETA reflects the ambulance's
+  // actual position rather than the original pickup point.
+  distanceMeters Float?
+  etaSeconds     Int?
+  routeGeometry  Json? // GeoJSON LineString coordinates: [[lng,lat], ...]
+
+  assignedAt          DateTime  @default(now())
+  enRouteToPickupAt    DateTime?
+  arrivedAtPickupAt    DateTime?
+  enRouteToHospitalAt  DateTime?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt             DateTime @updatedAt
+
+  transfer  PatientTransfer         @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  ambulance Ambulance               @relation(fields: [ambulanceId], references: [id])
+  driver    User                    @relation("TripDriver", fields: [driverId], references: [id])
+  pings     AmbulanceLocationPing[]
+
+  @@index([transferId])
+  @@index([ambulanceId, status])
+  @@index([driverId, status])
+  @@map("ambulance_trips")
+}
+
+// Breadcrumb trail of raw GPS pings — powers the "path traveled so far" on
+// the live map and gives a basic audit trail of a trip's actual route.
+model AmbulanceLocationPing {
+  id          String   @id @default(uuid())
+  ambulanceId String
+  tripId      String?
+  lat         Float
+  lng         Float
+  speedKph    Float?
+  headingDeg  Float?
+  recordedAt  DateTime @default(now())
+
+  ambulance Ambulance      @relation(fields: [ambulanceId], references: [id], onDelete: Cascade)
+  trip      AmbulanceTrip? @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  @@index([ambulanceId, recordedAt])
+  @@index([tripId, recordedAt])
+  @@map("ambulance_location_pings")
+}
+
+// ---------------------------------------------------------------------------
+// EMERGENCY RESPONSE — field pickup, live PPG monitoring, hospital alarm
+// Distinct from AmbulanceTrip/PatientTransfer: that flow is a *scheduled,
+// admin-to-admin agreed* handoff between two hospitals. This flow is a
+// 911-style field response — a paramedic starts monitoring a patient (who
+// may not even be registered yet) with no sending hospital, picks (or the
+// system nearest-matches) a destination, and that hospital's admins get an
+// immediate alarm rather than a request they can decline.
+//
+// Real-time delivery for both the live vitals stream and the hospital alarm
+// goes over MQTT (HiveMQ) rather than REST polling — see utils/mqtt.ts
+// (server, alarm-publish only) and the frontend's lib/mqttClient.ts
+// (browser, both publish-vitals and subscribe). The API layer here remains
+// the authoritative, audited source of truth for case state; MQTT is purely
+// a low-latency delivery channel layered on top of it.
+// ---------------------------------------------------------------------------
+
+enum EmergencyCaseStatus {
+  MONITORING  // paramedic started the case; no destination hospital chosen yet
+  DISPATCHED  // hospital selected & alarm sent
+  ACKNOWLEDGED // an admin at the hospital has seen the alarm
+  ASSIGNED    // a doctor has been assigned to receive the patient
+  ARRIVED     // ambulance has arrived at the hospital
+  CLOSED
+  CANCELLED
+}
+
+enum HospitalSelectionMethod {
+  MANUAL
+  AUTO_NEAREST
+}
+
+model EmergencyCase {
+  id                   String                   @id @default(uuid())
+  ambulanceId          String
+  paramedicId          String
+  patientId            String?
+  // Filled in instead of patientId for an unregistered/unknown field patient
+  // — e.g. "Unidentified male, approx. 40s, found at accident site".
+  unknownPatientLabel  String?
+  status               EmergencyCaseStatus      @default(MONITORING)
+
+  pickupLat            Float
+  pickupLng            Float
+  pickupAddress        String?
+
+  hospitalId           String?
+  selectionMethod      HospitalSelectionMethod?
+
+  // MQTT topic this case's PPG monitor publishes/subscribes on:
+  // hms/emergency/{id}/vitals — set at creation from the row's own id.
+  mqttTopic            String
+
+  // Latest snapshot, written by the paramedic's client alongside its MQTT
+  // publish (throttled) — lets anyone loading the case via REST (page
+  // refresh, not currently subscribed) see a recent reading immediately
+  // rather than a blank screen until the next live MQTT message.
+  latestHeartRate      Int?
+  latestSpo2           Int?
+  latestSystolic       Int?
+  latestDiastolic      Int?
+  latestRespRate       Int?
+  latestTempC          Float?
+  latestReadingAt      DateTime?
+  isAbnormal           Boolean                  @default(false)
+
+  assignedDoctorId     String?
+  assignedById         String?
+  acknowledgedById     String?
+
+  dispatchedAt         DateTime?
+  acknowledgedAt        DateTime?
+  assignedAt           DateTime?
+  arrivedAt            DateTime?
+  closedAt             DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  ambulance      Ambulance       @relation(fields: [ambulanceId], references: [id])
+  paramedic      User            @relation("EmergencyParamedic", fields: [paramedicId], references: [id])
+  patient        PatientProfile? @relation(fields: [patientId], references: [id])
+  hospital       Hospital?       @relation(fields: [hospitalId], references: [id])
+  assignedDoctor User?           @relation("EmergencyAssignedDoctor", fields: [assignedDoctorId], references: [id])
+  assignedBy     User?           @relation("EmergencyAssignedBy", fields: [assignedById], references: [id])
+  acknowledgedBy User?           @relation("EmergencyAcknowledgedBy", fields: [acknowledgedById], references: [id])
+
+  @@index([hospitalId, status])
+  @@index([paramedicId, status])
+  @@index([assignedDoctorId, status])
+  @@map("emergency_cases")
+}
