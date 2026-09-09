@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { ApiError } from "../../utils/ApiError";
 
@@ -215,11 +216,11 @@ async function getPatientOverview(actor: Actor) {
   const profile = await prisma.patientProfile.findUnique({ where: { userId: actor.id } });
   if (!profile) throw ApiError.internal("Patient profile is missing for this account");
 
-  const upcomingWhere = {
+  const upcomingWhere: Prisma.AppointmentWhereInput = {
     patientId: profile.id,
     status: { in: [...ACTIVE_APPOINTMENT_STATUSES] },
     scheduledStart: { gte: new Date() },
-  } as const;
+  };
 
   const [upcomingAppointments, upcomingAppointmentsCount, activePrescriptions, recentReports] = await Promise.all([
     prisma.appointment.findMany({ where: upcomingWhere, orderBy: { scheduledStart: "asc" }, take: 5, select: appointmentCardSelect }),

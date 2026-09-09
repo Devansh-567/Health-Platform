@@ -134,18 +134,30 @@ export async function assignDriver(actor: Actor, ambulanceId: string, driverId: 
   return updated;
 }
 
+type ManualAmbulanceStatus = (typeof MANUAL_STATUSES)[number];
+
 export async function setAmbulanceStatus(actor: Actor, ambulanceId: string, status: string) {
   if (!(MANUAL_STATUSES as readonly string[]).includes(status)) {
     throw ApiError.badRequest(
       "Status can only be manually set to AVAILABLE, MAINTENANCE or OFFLINE — ON_TRIP is managed automatically by trip dispatch."
     );
   }
+  // The check above already verified `status` at runtime — zod does too,
+  // one layer up (setAmbulanceStatusSchema) — but TS's Array#includes()
+  // doesn't narrow a plain `string` against a readonly literal-tuple array,
+  // so this asserts what's already been proven true rather than changing
+  // any behavior.
+  const validatedStatus = status as ManualAmbulanceStatus;
   const ambulance = await resolveScopedAmbulance(actor, ambulanceId);
   if (ambulance.status === "ON_TRIP") {
     throw ApiError.conflict("This ambulance is currently on a trip and can't have its status changed manually");
   }
 
-  const updated = await prisma.ambulance.update({ where: { id: ambulanceId }, data: { status }, select: ambulanceSelect });
+  const updated = await prisma.ambulance.update({
+    where: { id: ambulanceId },
+    data: { status: validatedStatus },
+    select: ambulanceSelect,
+  });
   await writeAudit({
     userId: actor.id,
     action: "AMBULANCE.STATUS_UPDATED",

@@ -14,6 +14,17 @@ export interface RouteResult {
   geometry: [number, number][];
 }
 
+// Just the shape of OSRM's response this file actually reads — `fetch`'s
+// `.json()` types as `unknown` under Node's built-in fetch types, so this
+// gives it a real shape instead of reaching for `any`.
+interface OsrmRouteResponse {
+  routes?: {
+    distance: number;
+    duration: number;
+    geometry: { coordinates: [number, number][] };
+  }[];
+}
+
 /**
  * Fastest driving route between two points, via OSRM's public routing
  * engine (OpenStreetMap data). Returns null (never throws) on any failure —
@@ -40,7 +51,7 @@ export async function getFastestRoute(
       return null;
     }
 
-    const body = await res.json();
+    const body = (await res.json()) as OsrmRouteResponse;
     const route = body?.routes?.[0];
     if (!route) return null;
 

@@ -33,6 +33,8 @@ export const PERMISSIONS = {
   VITALS_VIEW: "vitals.view",
   MEDICAL_HISTORY_VIEW_OWN: "medical_history.view.own",
   PROFILE_MANAGE_OWN: "profile.manage.own",
+  REPORT_UPLOAD: "report.upload",
+  REPORT_VIEW: "report.view",
 
   AMBULANCE_MANAGE: "ambulance.manage",
   AMBULANCE_TRIP_MANAGE: "ambulance_trip.manage",
