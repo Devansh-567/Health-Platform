@@ -5,13 +5,15 @@ import multer from "multer";
 import { randomUUID } from "crypto";
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { Readable } from "stream";
-import { env, isR2Configured } from "./env";
+import { env, isSupabaseStorageConfigured } from "./env";
 
 /**
  * Storage for uploaded report files, with two backends:
- *  - Cloudflare R2 (or any S3-compatible bucket), used whenever R2_* env
- *    vars are set — this is what actually survives a redeploy on a free
- *    host, since most of them wipe local disk on every deploy.
+ *  - Supabase Storage (any S3-compatible bucket works the same way — this
+ *    just happens to be the free option that needs no card), used whenever
+ *    SUPABASE_* env vars are set. This is what actually survives a
+ *    redeploy on a free host, since most of them wipe local disk on every
+ *    deploy.
  *  - Local disk under backend/uploads/reports, used otherwise (zero setup
  *    for local dev, but NOT guaranteed to persist in production).
  *
@@ -22,7 +24,7 @@ import { env, isR2Configured } from "./env";
  */
 
 const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "reports");
-if (!isR2Configured) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+if (!isSupabaseStorageConfigured) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
 
 const ALLOWED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15MB
@@ -46,9 +48,13 @@ let s3: S3Client | null = null;
 function getS3Client(): S3Client {
   if (s3) return s3;
   s3 = new S3Client({
-    region: "auto",
-    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: env.R2_ACCESS_KEY_ID!, secretAccessKey: env.R2_SECRET_ACCESS_KEY! },
+    // Supabase Storage's S3-compatible endpoint requires path-style
+    // addressing (bucket in the URL path, not as a subdomain) — this is
+    // called out explicitly in their docs and silently fails otherwise.
+    forcePathStyle: true,
+    region: env.SUPABASE_S3_REGION,
+    endpoint: `https://${env.SUPABASE_PROJECT_REF}.storage.supabase.co/storage/v1/s3`,
+    credentials: { accessKeyId: env.SUPABASE_S3_ACCESS_KEY_ID!, secretAccessKey: env.SUPABASE_S3_SECRET_ACCESS_KEY! },
   });
   return s3;
 }
@@ -58,9 +64,9 @@ export async function saveReportFile(file: Express.Multer.File): Promise<string>
   const ext = path.extname(file.originalname);
   const key = `${randomUUID()}${ext}`;
 
-  if (isR2Configured) {
+  if (isSupabaseStorageConfigured) {
     await getS3Client().send(
-      new PutObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key, Body: file.buffer, ContentType: file.mimetype })
+      new PutObjectCommand({ Bucket: env.SUPABASE_STORAGE_BUCKET, Key: key, Body: file.buffer, ContentType: file.mimetype })
     );
   } else {
     fs.writeFileSync(path.join(UPLOADS_ROOT, key), file.buffer);
@@ -71,8 +77,8 @@ export async function saveReportFile(file: Express.Multer.File): Promise<string>
 
 /** Streams a previously-saved report file as a download response. */
 export async function streamReportFile(storagePath: string, res: Response, downloadName: string): Promise<void> {
-  if (isR2Configured) {
-    const obj = await getS3Client().send(new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: storagePath }));
+  if (isSupabaseStorageConfigured) {
+    const obj = await getS3Client().send(new GetObjectCommand({ Bucket: env.SUPABASE_STORAGE_BUCKET, Key: storagePath }));
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadName)}"`);
     if (obj.ContentType) res.setHeader("Content-Type", obj.ContentType);
     await new Promise<void>((resolve, reject) => {
@@ -96,12 +102,12 @@ export async function streamReportFile(storagePath: string, res: Response, downl
  * "best-effort, never block the request" posture as publishMqtt().
  */
 export async function deleteReportFile(storagePath: string): Promise<void> {
-  if (isR2Configured) {
+  if (isSupabaseStorageConfigured) {
     try {
-      await getS3Client().send(new DeleteObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: storagePath }));
+      await getS3Client().send(new DeleteObjectCommand({ Bucket: env.SUPABASE_STORAGE_BUCKET, Key: storagePath }));
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[storage] Failed to delete R2 object ${storagePath}:`, err);
+      console.error(`[storage] Failed to delete Supabase Storage object ${storagePath}:`, err);
     }
     return;
   }

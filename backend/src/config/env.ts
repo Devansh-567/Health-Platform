@@ -67,17 +67,23 @@ const schema = z.object({
   MQTT_USERNAME: z.string().optional(),
   MQTT_PASSWORD: z.string().optional(),
 
-  // Cloudflare R2 (or any S3-compatible bucket) — used for uploaded clinical
-  // report files (config/storage.ts). Optional: if unset, the app falls
-  // back to local disk under backend/uploads/reports, which is fine for
-  // local dev but is NOT guaranteed to survive a redeploy on most free
-  // hosts. Create a free R2 bucket at https://dash.cloudflare.com -> R2,
-  // then R2 -> Manage API Tokens for the key pair. Endpoint is always
-  // https://<account_id>.r2.cloudflarestorage.com — no separate URL to copy.
-  R2_ACCOUNT_ID: z.string().optional(),
-  R2_ACCESS_KEY_ID: z.string().optional(),
-  R2_SECRET_ACCESS_KEY: z.string().optional(),
-  R2_BUCKET_NAME: z.string().optional(),
+  // Supabase Storage — used for uploaded clinical report files
+  // (config/storage.ts). Optional: if unset, the app falls back to local
+  // disk under backend/uploads/reports, which is fine for local dev but is
+  // NOT guaranteed to survive a redeploy on most free hosts.
+  //
+  // Supabase Storage exposes an S3-compatible endpoint, so this reuses the
+  // same @aws-sdk/client-s3 code as any other S3-compatible bucket — no
+  // separate SDK needed. Create a free project at https://supabase.com (no
+  // card required), create a bucket under Storage, then go to
+  // Storage -> Configuration -> S3 -> generate an access key pair. The
+  // project ref is the short id in your project's dashboard URL
+  // (https://supabase.com/dashboard/project/<this-part>).
+  SUPABASE_PROJECT_REF: z.string().optional(),
+  SUPABASE_S3_REGION: z.string().optional(), // shown on the same S3 Configuration page, e.g. "us-east-1"
+  SUPABASE_S3_ACCESS_KEY_ID: z.string().optional(),
+  SUPABASE_S3_SECRET_ACCESS_KEY: z.string().optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().optional(),
 
   COOKIE_DOMAIN: z.string().default("localhost"),
 });
@@ -109,4 +115,10 @@ function resolveMailProvider(): "smtp" | "resend" | "console" {
 export const mailProvider = resolveMailProvider();
 export const isEmailConfigured = mailProvider !== "console";
 export const isMqttConfigured = !!(env.MQTT_URL && env.MQTT_USERNAME && env.MQTT_PASSWORD);
-export const isR2Configured = !!(env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET_NAME);
+export const isSupabaseStorageConfigured = !!(
+  env.SUPABASE_PROJECT_REF &&
+  env.SUPABASE_S3_REGION &&
+  env.SUPABASE_S3_ACCESS_KEY_ID &&
+  env.SUPABASE_S3_SECRET_ACCESS_KEY &&
+  env.SUPABASE_STORAGE_BUCKET
+);
