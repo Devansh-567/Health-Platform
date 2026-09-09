@@ -1,9 +1,11 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
-import { env } from "./config/env";
+import { env, isProd } from "./config/env";
 import { logger } from "./config/logger";
 import { errorHandler, notFoundHandler } from "./middlewares/errorHandler";
 
@@ -26,7 +28,29 @@ import profileRoutes from "./modules/profile/profile.routes";
 
 export const app = express();
 
-app.use(helmet());
+app.use(
+  helmet({
+    // Helmet's default CSP only allows 'self' everywhere, which would
+    // silently break two of this app's core features once it starts
+    // serving the built frontend itself: Leaflet's map tile images (loaded
+    // from OpenStreetMap, not this origin) and the browser's direct
+    // MQTT-over-WebSocket connection to HiveMQ Cloud for live vitals/
+    // alarms. styleSrc allows 'unsafe-inline' because React's inline
+    // `style={{...}}` props render as literal style="" attributes, which
+    // CSP's style-src otherwise blocks regardless of where the JS came from.
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https:", "wss:"],
+        fontSrc: ["'self'", "data:", "https:"],
+        objectSrc: ["'none'"],
+      },
+    },
+  })
+);
 app.use(cors({ origin: env.CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
@@ -50,6 +74,21 @@ app.use("/api/appointments", appointmentsRoutes);
 app.use("/api/clinical", clinicalRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/profile", profileRoutes);
+
+// Serves the built frontend (see Dockerfile — vite build output is copied
+// to backend/public at image build time) so the whole app is one origin:
+// no CORS, and the auth refresh cookie's sameSite=strict just works, since
+// there's no second domain for the browser to treat as cross-site. Only
+// active when the build actually exists (i.e. in the combined-deploy
+// production image) — local dev keeps using the Vite dev server on its own
+// port with the proxy in frontend/vite.config.ts.
+const clientDist = path.join(__dirname, "public");
+if (isProd && fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(path.join(clientDist, "index.html"));
+  });
+}
 
 app.use(notFoundHandler);
 app.use(errorHandler);

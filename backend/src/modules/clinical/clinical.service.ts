@@ -1,7 +1,7 @@
 import { prisma } from "../../config/prisma";
 import { ApiError } from "../../utils/ApiError";
 import { writeAudit } from "../../utils/audit";
-import { deleteReportFile } from "../../config/storage";
+import { deleteReportFile, saveReportFile } from "../../config/storage";
 
 export interface Actor {
   id: string;
@@ -502,7 +502,7 @@ export async function resolveMyReportForDownload(actorId: string, reportId: stri
 export async function uploadReport(
   actor: Actor,
   patientUserId: string,
-  file: { filename: string; originalname: string; mimetype: string; size: number },
+  file: Express.Multer.File,
   title: string
 ) {
   const patientProfile = await resolvePatientProfile(patientUserId);
@@ -512,6 +512,8 @@ export async function uploadReport(
     throw ApiError.badRequest("Your account isn't linked to a hospital — contact a super admin.", "NO_HOSPITAL_ASSIGNED");
   }
 
+  const storagePath = await saveReportFile(file);
+
   const report = await prisma.report.create({
     data: {
       hospitalId: actor.hospitalId,
@@ -519,7 +521,7 @@ export async function uploadReport(
       uploadedById: actor.id,
       title,
       originalName: file.originalname,
-      storagePath: file.filename,
+      storagePath,
       mimeType: file.mimetype,
       fileSizeBytes: file.size,
     },

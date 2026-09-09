@@ -1,7 +1,7 @@
 import { asyncHandler } from "../../utils/asyncHandler";
 import * as service from "./clinical.service";
 import { ApiError } from "../../utils/ApiError";
-import { reportFileAbsolutePath } from "../../config/storage";
+import { streamReportFile } from "../../config/storage";
 
 function actorFrom(req: any) {
   return { id: req.user!.sub, roleCode: req.user!.roleCode, hospitalId: req.user!.hospitalId };
@@ -79,7 +79,7 @@ export const listMyReports = asyncHandler(async (req, res) => {
 
 export const downloadMyReport = asyncHandler(async (req, res) => {
   const report = await service.resolveMyReportForDownload(req.user!.sub, req.params.reportId);
-  res.download(reportFileAbsolutePath(report.storagePath), report.originalName);
+  await streamReportFile(report.storagePath, res, report.originalName);
 });
 
 export const uploadReport = asyncHandler(async (req, res) => {
@@ -96,7 +96,7 @@ export const listReports = asyncHandler(async (req, res) => {
 
 export const downloadReport = asyncHandler(async (req, res) => {
   const report = await service.resolveReportForDownload(actorFrom(req), req.params.patientUserId, req.params.reportId);
-  res.download(reportFileAbsolutePath(report.storagePath), report.originalName);
+  await streamReportFile(report.storagePath, res, report.originalName);
 });
 
 export const deleteReport = asyncHandler(async (req, res) => {
