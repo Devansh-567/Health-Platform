@@ -23,6 +23,12 @@ RUN npm run build
 # --- 2. Build the backend ------------------------------------------------
 FROM node:20-alpine AS backend-build
 WORKDIR /app/backend
+# Alpine's base image ships no OpenSSL at all, so `prisma generate`'s
+# postinstall step below can't detect a version and silently downloads the
+# wrong query engine (defaults to a guess, per its own warning) — installing
+# openssl first lets it detect correctly and match what the runtime stage
+# actually has available.
+RUN apk add --no-cache openssl
 COPY backend/package*.json ./
 COPY backend/prisma ./prisma
 RUN npm ci
@@ -34,6 +40,10 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Same reason as backend-build: without this, the query engine binary that
+# *did* get generated correctly still fails to load at runtime with
+# "Error loading shared library libssl.so.1.1: No such file or directory".
+RUN apk add --no-cache openssl
 COPY backend/package*.json ./
 COPY backend/prisma ./prisma
 RUN npm ci --omit=dev

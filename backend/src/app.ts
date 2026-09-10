@@ -28,6 +28,18 @@ import profileRoutes from "./modules/profile/profile.routes";
 
 export const app = express();
 
+// Render (like most PaaS hosts) sits the app behind its own reverse proxy,
+// so every request arrives with X-Forwarded-For/X-Forwarded-Proto set by
+// that proxy, not by the actual client. Without this, Express treats the
+// proxy's own connection as "the client" — express-rate-limit refuses to
+// trust X-Forwarded-For at all in that case (logged as a startup-adjacent
+// ValidationError) and effectively rate-limits by the proxy's IP instead of
+// each real visitor's, and `secure: isProd` on the refresh cookie also
+// depends on Express correctly seeing X-Forwarded-Proto: https here.
+// "1" trusts exactly one hop (Render's own proxy) rather than an
+// unbounded chain, which is the right setting for this specific host.
+app.set("trust proxy", 1);
+
 app.use(
   helmet({
     // Helmet's default CSP only allows 'self' everywhere, which would
